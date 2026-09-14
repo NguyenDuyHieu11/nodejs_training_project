@@ -1,6 +1,7 @@
 import http, { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path';
 import { Buffer } from 'node:buffer'
+import { Server } from 'node:http';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
@@ -55,29 +56,50 @@ function splitPath(path:string): string[] {
     return paths
 }
 
-export class App {
+export type Middleware = ( 
+    req: IncomingMessage,
+    res: ServerResponse,
+    next: () => void
+) => void
+
+export class App {     //   SHARED FOR ALL REQUESTS
     private routes: Route[] = [];
+    private middlewares: Middleware[] = [];
+
     private server = http.createServer(this.handleRequest.bind(this)) // CONFUSING
+
+    use(fn: Middleware): this {
+        this.middlewares.push(fn);
+        return this;
+    }
 
     private _register(method: HttpMethod, path: string, handler: Handler) {
         let segments: string[] = splitPath(path)
         this.routes.push({method, segments: segments, handler})
     }
 
-  private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    const match = this._match(req.method ?? 'GET', url.pathname);
+    private handleRequest(req: IncomingMessage, res: ServerResponse): void {
+        const url = new URL(req.url ?? '/', `http://${req.headers.hoste}`);
+        let index = 0;
 
-    if (!match) {
-      res.statusCode = 404;
-      res.end('Not Found');
-      return;
+        const next = (): void => {
+            const middleware = this.middlewares[index++];
+            if (middleware) {
+                middleware(req, res, next);
+                return
+            }
+
+            const match = this._match(req.method ?? 'GET', url.pathname)
+            if (!match) {
+                res.statusCode = 400;
+                res.end('Not found;');
+                return;
+            }
+
+            req.params = match.params;
+            req.query = Object.fromEntries(url.searchParams);
+        }
     }
-
-    req.params = match.params;
-    req.query = Object.fromEntries(url.searchParams);
-    match.handler(req, res);
-  }
 
     /**
      * Finds the first registered route matching an incoming method + pathname.
