@@ -1,15 +1,48 @@
 import http, { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path';
+import { Buffer } from 'node:buffer'
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
 const METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'DELETE'];
 
-export interface Request extends IncomingMessage {
-    params: Record<string, string>;
+declare module 'node:http' {
+    interface IncomingMessage {
+        params: Record<string, string>;
+        query: Record<string, string>;
+    }
+
+    interface ServerResponse {
+        status(code: number): this;
+        json(body: unknown): void;
+        send(body: string | Buffer | object): void;
+    }
 }
 
-export type Handler = (req: Request, res: ServerResponse) => void;
+http.ServerResponse.prototype.json = function (body: unknown) {
+    this.setHeader('Content-Type', 'application/json');
+    this.end(JSON.stringify(body))
+}
+
+http.ServerResponse.prototype.send = function (body: string | Buffer | object) {
+    if (typeof body === 'string') {
+        this.setHeader('Content-Type', 'text/plain');
+        this.end(body);
+    } else if (Buffer.isBuffer(body)) {
+        this.setHeader('Content-Type', 'application/octet-stream');
+        this.end(body);
+    } else  {
+        this.json(body)
+    }
+    
+}
+
+http.ServerResponse.prototype.status = function (code: number) {
+  this.statusCode = code;
+  return this;
+};
+
+export type Handler = (req: IncomingMessage, res: ServerResponse) => void;
 
 interface Route {
     method: HttpMethod;
@@ -31,19 +64,20 @@ export class App {
         this.routes.push({method, segments: segments, handler})
     }
 
-    private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-        const { pathname } = new URL(req.url ?? '/', `http://${req.headers.host}`); // ?? return ve trai neu ve phai is either null or undefined
-        const match = this._match(req.method ?? 'GET', pathname)
+  private handleRequest(req: IncomingMessage, res: ServerResponse): void {
+    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+    const match = this._match(req.method ?? 'GET', url.pathname);
 
-        if (!match) {
-            res.statusCode = 400;
-            res.end('Not Found');
-            return;
-        }
-        
-        (req as Request).params = match.params;
-        match.handler(req as Request, res);
+    if (!match) {
+      res.statusCode = 404;
+      res.end('Not Found');
+      return;
     }
+
+    req.params = match.params;
+    req.query = Object.fromEntries(url.searchParams);
+    match.handler(req, res);
+  }
 
     /**
      * Finds the first registered route matching an incoming method + pathname.
