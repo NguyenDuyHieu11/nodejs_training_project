@@ -29,7 +29,7 @@ export class WorkerPool {
         worker.on('message', (value) => {
             const job = this.active.get(worker)
             this.active.delete(worker);
-            job?.resolve(value);
+            job?.resolve(value); // job se chi done khi ma minh resolve no
             this.idle.push(worker);
             this.dispatchNext();
         })

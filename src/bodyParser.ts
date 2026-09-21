@@ -1,5 +1,5 @@
 import { IncomingHttpHeaders, IncomingMessage } from "http";
-import type { Middleware } from "./App.js";
+import type { Middleware } from "./types.js";
 
 declare module 'node:http' {
     interface IncomingMessage {
@@ -17,12 +17,20 @@ export function json(): Middleware {
 
         // I can't know how many bytes will come in advance so
         // I can't just Buffer.alloc(). Maybe using array is enough?
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => {chunks.push(chunk)})
-        req.on('end', () => {
-            const raw = Buffer.concat(chunks).toString('utf-8');
-            req.body = raw.length > 0 ? JSON.parse(raw) : {};
-            next();
+        return new Promise<void>((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            req.on('data', (chunk: Buffer) => {chunks.push(chunk)})
+            req.on('error', reject);
+            req.on('end', () => {
+                try {
+                    const raw = Buffer.concat(chunks).toString('utf-8');
+                    req.body = raw.length > 0 ? JSON.parse(raw) : {};
+                    next();
+                    resolve();
+                } catch (err) {
+                    reject(err);
+                }
+            });
         });
     }
 }
@@ -35,14 +43,21 @@ export function urlencoded(): Middleware {
             return;
         }
 
-        const chunks: Buffer[] = [];
+        return new Promise<void>((resolve, reject) => {
+            const chunks: Buffer[] = [];
 
-        req.on('data', (chunk: Buffer) => {chunks.push(chunk)});
-        req.on('end', () => {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        req.body = Object.fromEntries(new URLSearchParams(raw));
-        next();
-
+            req.on('data', (chunk: Buffer) => {chunks.push(chunk)});
+            req.on('error', reject);
+            req.on('end', () => {
+                try {
+                    const raw = Buffer.concat(chunks).toString('utf8');
+                    req.body = Object.fromEntries(new URLSearchParams(raw));
+                    next();
+                    resolve();
+                } catch (err) {
+                    reject(err);
+                }
+            });
         });
-    }                                               
+    }
 }

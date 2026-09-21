@@ -2,6 +2,9 @@ import http, { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path';
 import { Buffer } from 'node:buffer'
 import { Server } from 'node:http';
+import { defaultErrorHandler, isPromiseLike } from './error/error.js';
+import type { Handler, Middleware, ErrorHandler } from './types.js';
+import EventEmitter from 'node:events';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
@@ -43,8 +46,6 @@ http.ServerResponse.prototype.status = function (code: number) {
   return this;
 };
 
-export type Handler = (req: IncomingMessage, res: ServerResponse) => void;
-
 interface Route {
     method: HttpMethod;
     segments: string[];
@@ -56,20 +57,29 @@ function splitPath(path:string): string[] {
     return paths
 }
 
-export type Middleware = ( 
-    req: IncomingMessage,
-    res: ServerResponse,
-    next: () => void
-) => void
-
-export class App {     //   SHARED FOR ALL REQUESTS
+export class App extends EventEmitter {     //   SHARED FOR ALL REQUESTS
+    private errorHandler: ErrorHandler = defaultErrorHandler;
     private routes: Route[] = [];
     private middlewares: Middleware[] = [];
 
     private server = http.createServer(this.handleRequest.bind(this)) // CONFUSING
 
+    constructor() {
+        super();
+        // Guarantees at least one 'error' listener always exists, so emit('error', ...)
+        // below never hits EventEmitter's special zero-listener case (which throws
+        // synchronously and crashes the process) — regardless of whether the app
+        // author registers their own listener.
+        this.on('error', () => {});
+    }
+
     use(fn: Middleware): this {
         this.middlewares.push(fn);
+        return this;
+    }
+
+    onError(fn: ErrorHandler): this {
+        this.errorHandler = fn;
         return this;
     }
 
@@ -79,26 +89,48 @@ export class App {     //   SHARED FOR ALL REQUESTS
     }
 
     private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-        const url = new URL(req.url ?? '/', `http://${req.headers.hoste}`);
+
+        this.emit('handleRequest', res, req); // bat dau handle request
+
+        res.on('finish', () => {
+            setImmediate(() => {this.emit('handleRequestFinishEmitter', res, req)})
+        })
+
+        const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
         let index = 0;
 
+        const onError = (err: unknown): void => {
+            this.errorHandler(err, req, res);
+            this.emit('error', err, req);
+        };
+
         const next = (): void => {
-            const middleware = this.middlewares[index++];
-            if (middleware) {
-                middleware(req, res, next);
-                return
-            }
+            try {
+                const middleware = this.middlewares[index++];
+                if (middleware) {
+                    const result = middleware(req, res, next);
+                    if (isPromiseLike(result)) result.catch(onError);
+                    return;
+                }
 
-            const match = this._match(req.method ?? 'GET', url.pathname)
-            if (!match) {
-                res.statusCode = 400;
-                res.end('Not found;');
-                return;
-            }
+                const match = this._match(req.method ?? 'GET', url.pathname)
+                if (!match) {
+                    res.statusCode = 404;
+                    res.end('Not Found');
+                    return;
+                }
 
-            req.params = match.params;
-            req.query = Object.fromEntries(url.searchParams);
+                req.params = match.params;
+                req.query = Object.fromEntries(url.searchParams);
+
+                const result = match.handler(req, res);
+                if (isPromiseLike(result)) result.catch(onError);
+            } catch (err) {
+                onError(err);
+            }
         }
+
+        next();
     }
 
     /**

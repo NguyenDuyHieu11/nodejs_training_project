@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
-import type { Middleware } from './App.js'
+import type { Middleware } from './types.js'
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html',
