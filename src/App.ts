@@ -5,6 +5,8 @@ import { Server } from 'node:http';
 import { defaultErrorHandler, isPromiseLike } from './error/error.js';
 import type { Handler, Middleware, ErrorHandler } from './types.js';
 import EventEmitter from 'node:events';
+import process from 'node:process';
+import { Socket } from 'node:net';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
@@ -61,8 +63,9 @@ export class App extends EventEmitter {     //   SHARED FOR ALL REQUESTS
     private errorHandler: ErrorHandler = defaultErrorHandler;
     private routes: Route[] = [];
     private middlewares: Middleware[] = [];
-
+    private socketList = new Map<Socket, boolean>();
     private server = http.createServer(this.handleRequest.bind(this)) // CONFUSING
+    private shuttingDown = true;
 
     constructor() {
         super();
@@ -71,6 +74,15 @@ export class App extends EventEmitter {     //   SHARED FOR ALL REQUESTS
         // synchronously and crashes the process) — regardless of whether the app
         // author registers their own listener.
         this.on('error', () => {});
+        this.server.on('connection', (socket: Socket) => {
+            this.socketList.set(socket, true);
+            socket.on('close', () => {
+                this.socketList.delete(socket);
+            })
+        });
+
+        process.on('SIGTERM', () => this.shutdown());
+        process.on('SIGINT', () => this.shutdown());    
     }
 
     use(fn: Middleware): this {
@@ -81,6 +93,19 @@ export class App extends EventEmitter {     //   SHARED FOR ALL REQUESTS
     onError(fn: ErrorHandler): this {
         this.errorHandler = fn;
         return this;
+    }
+
+    private shutdown(): void {
+        if (this.shuttingDown) return;
+        this.shuttingDown = true;
+
+        console.log('chuan bi tat gracfully');
+
+        for (const entry of this.socketList) {
+            if(entry[1]) {
+                entry[0].destroy();
+            }
+        }
     }
 
     private _register(method: HttpMethod, path: string, handler: Handler) {
